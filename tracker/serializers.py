@@ -20,3 +20,16 @@ class PeriodSerializer(serializers.ModelSerializer):
     class Meta:
         model = Period
         fields = '__all__'
+
+    def validate(self, data):
+
+        instance = getattr(self, 'instance', None)
+
+        first_day = data.get('first_day', getattr(instance, 'first_day', None))
+        ovulation_day = data.get('ovulation_day', None)
+
+        if ovulation_day and first_day and ovulation_day <= first_day:
+            raise serializers.ValidationError
+        
+        return data
+    
