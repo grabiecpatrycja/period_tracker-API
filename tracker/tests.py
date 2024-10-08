@@ -5,6 +5,7 @@ from rest_framework import status
 from django.contrib.auth.models import User
 from datetime import date
 from tracker.models import Period
+from datetime import datetime
 
 
 class RegistrationTestCase(TestCase):
@@ -83,7 +84,6 @@ class PeriodTestCase(TestCase):
         response = self.client.patch(url, data, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    
     def test_get_all_objects(self):
         Period.objects.create(first_day='2024-01-01', ovulation_day='2024-01-15', user=self.user)
         Period.objects.create(first_day='2024-01-30', ovulation_day='2024-02-14', user=self.user)
@@ -98,11 +98,13 @@ class PeriodTestCase(TestCase):
             self.assertEqual(period.user, self.user)
 
     def test_get_single_object(self):
-        period = Period.objects.create(first_day='2024-01-01', ovulation_day='2024-01-15', user=self.user)
-        url = reverse('period-detail', args=[period.id])
+        period_1 = Period.objects.create(first_day='2024-01-01', ovulation_day='2024-01-15', user=self.user)
+        period_2 = Period.objects.create(first_day='2024-01-30', ovulation_day='2024-02-14', user=self.user)
+        url = reverse('period-detail', args=[period_2.id])
         response = self.client.get(url, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['first_day'], '2024-01-01')
+        self.assertEqual(response.data['first_day'], '2024-01-30')
+        self.assertEqual(response.data['length'], 29)
 
     def test_delete_object(self):
         period = Period.objects.create(first_day='2024-01-01', ovulation_day='2024-01-15', user=self.user)
@@ -122,3 +124,28 @@ class PeriodTestCase(TestCase):
         response = self.client.get(url, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['first_day'], '2024-02-28')
+
+class StatisticTestCase(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='testuser', password='testpassword')
+        self.otheruser = User.objects.create_user(username='otheruser', password='otherpassword')
+        self.client.force_authenticate(user=self.user)
+        Period.objects.create(first_day = '2024-08-02', ovulation_day = '2024-08-15', user=self.user)
+        Period.objects.create(first_day = '2024-09-02', ovulation_day = '2024-09-16', user=self.user)
+        Period.objects.create(first_day = '2024-10-01', user=self.user)
+
+
+    def test_no_authentication(self):
+        self.client.force_authenticate(user=None)
+        url = reverse('period-list')
+        response = self.client.get(url, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_statistic(self):
+        url = reverse('statistic')
+        response = self.client.get(url, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        queryset_list = response.json()
+        self.assertEqual(queryset_list,{'averages': {'avg_length': 30, 'avg_ovulation': 15},
+                                        'predictions': {'day': 8, 'next_period': '2024-10-31', 'next_ovulation': '2024-10-16'}})

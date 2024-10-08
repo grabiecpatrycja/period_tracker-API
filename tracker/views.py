@@ -1,3 +1,5 @@
+from django.db.models import Subquery, OuterRef, Avg, F, ExpressionWrapper, IntegerField, DateField
+from django.db.models.functions import Round, TruncDate, Now
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, viewsets
@@ -6,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from django.contrib.auth.models import User
 from tracker.serializers import *
+from datetime import timedelta
 
 
 class RegisterView(APIView):
@@ -26,7 +29,22 @@ class PeriodViewSet(viewsets.ModelViewSet):
     serializer_class = PeriodSerializer
 
     def get_queryset(self):
-        return Period.objects.filter(user=self.request.user).order_by('first_day')
+
+        previous_period = Subquery(
+            Period.objects.filter(user=OuterRef('user'), first_day__lt=OuterRef('first_day'))
+                .order_by('-first_day')
+                .values('first_day')[:1]
+            )
+        
+        cycles = (Period.objects.filter(user=self.request.user)
+                .order_by('first_day')
+                .annotate(length=ExpressionWrapper(
+                    (F('first_day') - previous_period)/timedelta(days=1),
+                    output_field=IntegerField()
+                ))
+            )
+
+        return cycles
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -41,3 +59,54 @@ class PeriodViewSet(viewsets.ModelViewSet):
             return Response(serializer.data, status=status.HTTP_200_OK)
         
         return Response(status=status.HTTP_404_NOT_FOUND)
+    
+class StatisticView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+
+        previous_period = Subquery(
+            Period.objects.filter(user=OuterRef('user'), first_day__lt=OuterRef('first_day'))
+            .order_by('-first_day')
+            .values('first_day')[:1])
+        
+        averages = (Period.objects.filter(user=self.request.user)
+                .order_by('first_day')
+                .annotate(length=ExpressionWrapper(
+                    (F('first_day') - previous_period)/timedelta(days=1),
+                    output_field=IntegerField()
+                ))
+                .annotate(ovul_length=ExpressionWrapper(
+                    ((F('ovulation_day')-F('first_day'))/timedelta(days=1))+1,
+                    output_field=IntegerField()
+                ))
+                .aggregate(avg_length=Avg(F'length'), avg_ovulation=Round(Avg(F'ovul_length')))
+            )
+        
+        predictions = (Period.objects.filter(user=self.request.user)
+                       .order_by('-first_day')
+                       .annotate(day=ExpressionWrapper(
+                           (TruncDate(Now())-F('first_day'))/timedelta(days=1)+1,
+                           output_field=IntegerField()
+                       ))
+                       .annotate(next_period=ExpressionWrapper(
+                            F('first_day') + timedelta(days=averages['avg_length']),
+                            output_field=DateField()
+                        ))
+                        .annotate(next_ovulation=ExpressionWrapper(
+                            F('first_day') + timedelta(days=averages['avg_ovulation']),
+                            output_field=DateField()
+                        ))
+                       .values('day', 'next_period', 'next_ovulation')
+                       .first()
+
+
+        )
+        
+        result = {
+            'averages': averages,
+            'predictions': predictions
+        }
+        return Response(result)
+    

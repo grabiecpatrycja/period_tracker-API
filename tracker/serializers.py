@@ -16,6 +16,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class PeriodSerializer(serializers.ModelSerializer):
     user = serializers.PrimaryKeyRelatedField(read_only=True)
+    length = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Period

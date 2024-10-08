@@ -8,7 +8,8 @@ router.register(r'period', PeriodViewSet, basename='period')
 
 urlpatterns = [
     path('register', RegisterView.as_view(), name='register'),
-    path('token', TokenObtainPairView.as_view(), name='token')
+    path('token', TokenObtainPairView.as_view(), name='token'),
+    path('statistic', StatisticView.as_view(), name='statistic')
 ]
 
 urlpatterns += router.urls
