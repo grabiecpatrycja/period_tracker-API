@@ -1,5 +1,6 @@
-from django.db.models import Subquery, OuterRef, Avg, F, ExpressionWrapper, IntegerField, DateField
-from django.db.models.functions import Round, TruncDate, Now
+from django.db.models import Subquery, OuterRef, Avg, F, ExpressionWrapper, IntegerField, DateField, When, Case, Value
+from django.db.models.functions import Round, TruncDate
+from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, viewsets
@@ -42,6 +43,12 @@ class PeriodViewSet(viewsets.ModelViewSet):
                     (F('first_day') - previous_period)/timedelta(days=1),
                     output_field=IntegerField()
                 ))
+                .annotate(ovul_len=Case(
+                    When(ovulation_day__isnull=True, then=Value(None)),
+                    default=ExpressionWrapper(                            
+                        ((F('ovulation_day')-F('first_day'))/timedelta(days=1))+1,
+                        output_field=IntegerField())
+                ))
             )
 
         return cycles
@@ -66,6 +73,13 @@ class StatisticView(APIView):
 
     def get(self, request):
 
+        user_periods = Period.objects.filter(user=request.user)
+
+        if not user_periods.exists() or user_periods.count() < 2:
+            return Response(
+                {'message': 'Add more data to perform calculations.'},
+                status=status.HTTP_400_BAD_REQUEST)
+
         previous_period = Subquery(
             Period.objects.filter(user=OuterRef('user'), first_day__lt=OuterRef('first_day'))
             .order_by('-first_day')
@@ -77,36 +91,52 @@ class StatisticView(APIView):
                     (F('first_day') - previous_period)/timedelta(days=1),
                     output_field=IntegerField()
                 ))
-                .annotate(ovul_length=ExpressionWrapper(
-                    ((F('ovulation_day')-F('first_day'))/timedelta(days=1))+1,
-                    output_field=IntegerField()
+                .annotate(ovul_length=Case(
+                        When(ovulation_day__isnull=True, then=Value(14)),
+                        default=ExpressionWrapper(
+                            ((F('ovulation_day')-F('first_day'))/timedelta(days=1))+1,
+                            output_field=IntegerField())
                 ))
-                .aggregate(avg_length=Avg(F'length'), avg_ovulation=Round(Avg(F'ovul_length')))
+                .aggregate(avg_length=Round(Avg(F'length')), avg_ovulation=Round(Avg(F'ovul_length')))
             )
         
         predictions = (Period.objects.filter(user=self.request.user)
                        .order_by('-first_day')
                        .annotate(day=ExpressionWrapper(
-                           (TruncDate(Now())-F('first_day'))/timedelta(days=1)+1,
+                           (TruncDate(timezone.now())-F('first_day'))/timedelta(days=1)+1,
                            output_field=IntegerField()
                        ))
                        .annotate(next_period=ExpressionWrapper(
                             F('first_day') + timedelta(days=averages['avg_length']),
                             output_field=DateField()
                         ))
-                        .annotate(next_ovulation=ExpressionWrapper(
-                            F('first_day') + timedelta(days=averages['avg_ovulation']),
-                            output_field=DateField()
+                        .annotate(days_to_next=ExpressionWrapper(
+                            (F('next_period')-TruncDate(timezone.now()))/timedelta(days=1),
+                            output_field=IntegerField()
                         ))
-                       .values('day', 'next_period', 'next_ovulation')
+                        .annotate(next_ovulation=Case(
+                            When(ovulation_day__isnull = False, then=None),
+                            default=ExpressionWrapper(
+                                F('first_day') + timedelta(days=averages['avg_ovulation']),
+                                output_field=DateField())
+                        ))
+                        .annotate(days_to_ovul_raw=ExpressionWrapper(
+                                (F('next_ovulation')-TruncDate(timezone.now()))/timedelta(days=1),
+                                output_field=IntegerField()
+                                ),
+                                days_to_ovul=Case(
+                                    When(days_to_ovul_raw__lt=0, then=Value(None)),
+                                    default=F('days_to_ovul_raw'),
+                                    output_field=IntegerField()
+                        ))
+                       .values('day', 'next_period', 'days_to_next', 'next_ovulation', 'days_to_ovul')
                        .first()
-
-
         )
         
         result = {
             'averages': averages,
             'predictions': predictions
         }
+
         return Response(result)
     
